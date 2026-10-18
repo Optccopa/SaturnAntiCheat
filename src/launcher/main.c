@@ -3,7 +3,7 @@
 #include <windowsx.h>
 #include <strsafe.h>
 
-#include "driver.h"
+#include "launcher/driver.h"
 
 #define COL_BG RGB(216, 174, 109)
 #define COL_ICON RGB(101, 95, 69)
@@ -15,6 +15,19 @@ static const wchar_t CLASS_NAME[] = L"saturnLauncher";
 static const wchar_t LAUNCHER_NAME[] = L"Saturn Launcher";
 
 enum { BTN_NONE, BTN_MIN, BTN_CLOSE };
+enum { HEARTBEAT_TIMER = 1 };
+
+static HEARTBEAT_STATUS g_heartbeat = HEARTBEAT_PENDING;
+
+static const RECT HEARTBEAT_RECT = { 0, 0, 220, 32 };
+
+static const struct { COLORREF col; const wchar_t *text; } HB[] = {
+    [HEARTBEAT_SUCCESS] = { RGB(46, 160, 67), L"Driver OK" },
+    [HEARTBEAT_FAILED] = { RGB(200, 40, 40), L"Driver not responding" },
+    [HEARTBEAT_CS2_NOT_FOUND] = { RGB(220, 150, 20), L"CS2 Not found" },
+    [HEARTBEAT_PENDING] = { RGB(120, 120, 120), L"Checking driver ..." },
+};
+
 
 static int g_hover = BTN_NONE;
 static BOOL g_tracking = FALSE;
@@ -64,7 +77,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // close
             int cx = rc.right - 23, cy = 16;
             MoveToEx(hdc, cx - 5, cy - 5, NULL); LineTo(hdc, cx + 5, cy + 5);
-
             MoveToEx(hdc, cx + 5, cy - 5, NULL); LineTo(hdc, cx - 5, cy + 5);
 
             // minimize
@@ -83,6 +95,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             out.bottom = out.top + h;
             DrawTextW(hdc, status, -1, &out, DT_CENTER);
 
+            // heartbeat status
+            HBRUSH dot = CreateSolidBrush(HB[g_heartbeat].col);
+            HGDIOBJ prevBrush = SelectObject(hdc, dot);
+            HGDIOBJ prevPen = SelectObject(hdc, GetStockObject(NULL_PEN));
+            Ellipse(hdc, 12, 11, 23, 22);
+            SelectObject(hdc, prevPen);
+            SelectObject(hdc, prevBrush);
+            DeleteObject(dot);
+
+            RECT t = HEARTBEAT_RECT;
+            t.left = 30;
+            DrawTextW(hdc, HB[g_heartbeat].text, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+
+            // cleanup
             SelectObject(hdc, old);
             DeleteObject(pen);
 
@@ -116,6 +142,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return HTCAPTION;
             }
             return hit;
+        }
+
+        case WM_TIMER: {
+            if (wp == HEARTBEAT_TIMER) {
+                HEARTBEAT_STATUS hb = pingDriver();
+                if (hb != g_heartbeat) {
+                    g_heartbeat = hb;
+                    InvalidateRect(hwnd, &HEARTBEAT_RECT, TRUE);
+                }
+            }
+            return 0;
         }
 
         case WM_DESTROY: {
@@ -204,6 +241,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         
     } else {
         updateStatus(hwnd, L"Anticheat running ...");
+        SetTimer(hwnd, HEARTBEAT_TIMER, 1000, NULL);
 
         INT_PTR r = (INT_PTR)ShellExecuteW(NULL, L"open",
             L"C:\\Program Files (x86)\\Steam\\steam.exe",

@@ -1,7 +1,11 @@
+#pragma once
+
 #include <ntifs.h>
 
-static const UNICODE_STRING cs2Suffix = RTL_CONSTANT_STRING(L"\\game\\bin\\win64\\cs2.exe");
+#include "driver/allowlist.h"
+
 static volatile HANDLE g_Cs2Pid = NULL;
+static const UNICODE_STRING cs2Suffix = RTL_CONSTANT_STRING(L"\\game\\bin\\win64\\cs2.exe");
 
 #ifndef THREAD_QUERY_INFORMATION
 #define THREAD_QUERY_INFORMATION (0x0040)
@@ -27,6 +31,11 @@ VOID createProcessRoutine(
     if (CreateInfo == NULL) { // exit
         if (ProcessId == g_Cs2Pid) {
             InterlockedExchangePointer((PVOID volatile*)&g_Cs2Pid, NULL);
+
+            FreeRoot(&g_GameRoot);
+            FreeRoot(&g_Sys32Root);
+            FreeRoot(&g_SteamRoot);
+
             DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
                 "saturn: cs2 stopped, pid %lu\n", (ULONG)(ULONG_PTR)ProcessId
             );
@@ -43,6 +52,16 @@ VOID createProcessRoutine(
     }
 
     InterlockedExchangePointer((PVOID volatile*)&g_Cs2Pid, ProcessId);
+
+    PEPROCESS parent;
+    if (NT_SUCCESS(PsLookupProcessByProcessId(CreateInfo->ParentProcessId, &parent))) {
+        PUNICODE_STRING parentName;
+        if (NT_SUCCESS(SeLocateProcessImageName(parent, &parentName))) {
+            SetRoot(&g_SteamRoot, parentName, &kSteamRel);
+            ExFreePool(parentName);
+        }
+        ObDereferenceObject(parent);
+    }
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
         "saturn: cs2 launched, pid %lu\n", (ULONG)(ULONG_PTR)ProcessId
@@ -89,9 +108,9 @@ VOID createThreadRoutine(
                         if (NT_SUCCESS(status)) {
                             if (mbi.Type != MEM_IMAGE) {
                                 DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-                                    "saturn: suspicous thread %lu starts outside an image at %p (type 0x%lx, protect 0x%lx)\n",
-                                    (ULONG)(ULONG_PTR)ThreadId, startAddress, mbi.Type, mbi.Protect,
-                                    (ULONG)(ULONG_PTR)PsGetCurrentProcessId());
+                                    "saturn: suspicous thread %lu from pid %lu starts outside an image at %p (type 0x%lx, protect 0x%lx)\n",
+                                    (ULONG)(ULONG_PTR)ThreadId, (ULONG)(ULONG_PTR)currentProcessId,
+                                    startAddress, mbi.Type, mbi.Protect);
                             }                        
                         }
 
@@ -108,12 +127,26 @@ VOID loadImageRoutine(
     IN HANDLE ProcessId,
     IN PIMAGE_INFO ImageInfo
 ) {
-    if (ProcessId == NULL) { return; } // Kernel driver
-
-    if (FullImageName && ProcessId == g_Cs2Pid) {
-        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
-            "saturn: process %p loaded image: %wZ at Address: %p\n", 
-            ProcessId, FullImageName, ImageInfo->ImageBase
-        );
+    if (!ProcessId || !FullImageName || ProcessId != g_Cs2Pid) {
+        return;
     }
+
+    if (!g_GameRoot.Length) {
+        SetRoot(&g_GameRoot, FullImageName, &kCs2Rel);
+        return;
+    }
+
+    if (!g_Sys32Root.Length) {
+        SetRoot(&g_Sys32Root, FullImageName, &kNtdllRel);
+        return;
+    }
+
+    if (ImageInfo->ImageSignatureLevel > 8 || IsAllowlisted(FullImageName)) {
+        return;
+    }
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+        "saturn: unverified image loaded: %wZ at Address: %p\n", 
+        FullImageName, ImageInfo->ImageBase
+    );
 }

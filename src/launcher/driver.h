@@ -2,6 +2,9 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winioctl.h>
+
+#include "shared/ioctl.h"
 
 DWORD startDriver(const wchar_t *sysPath) {
     SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
@@ -43,4 +46,31 @@ void stopDriver(void) {
     DeleteService(svc);
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
+}
+
+typedef enum  {
+    HEARTBEAT_SUCCESS, HEARTBEAT_FAILED, HEARTBEAT_CS2_NOT_FOUND, HEARTBEAT_PENDING
+} HEARTBEAT_STATUS;
+
+HEARTBEAT_STATUS pingDriver(void) {
+    HANDLE dev = CreateFileW(SATURN_USER_PATH, GENERIC_READ | GENERIC_WRITE,
+        0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (dev == INVALID_HANDLE_VALUE) {
+        return HEARTBEAT_FAILED;
+    }
+
+    ULONG reply = 0;
+    DWORD got = 0;
+    BOOL ok = DeviceIoControl(dev, IOCTL_HEARTBEAT, NULL, 0,
+        &reply, sizeof reply, &got, NULL);
+
+    CloseHandle(dev);
+
+    if (reply == HEARTBEAT_STATUS_CS2_NOT_FOUND) {
+        return HEARTBEAT_CS2_NOT_FOUND;
+    } else if (reply == HEARTBEAT_MAGIC && ok && got == sizeof reply) {
+        return HEARTBEAT_SUCCESS;
+    } else {
+        return HEARTBEAT_FAILED;
+    }
 }

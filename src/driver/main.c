@@ -1,9 +1,60 @@
 #include <ntifs.h>
 
-#include "callbacks.h"
+#include "driver/callbacks.h"
+
+#include "shared/ioctl.h"
+
+NTSTATUS DriverCreateClose(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS DriverControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG written = 0;
+
+    switch (stack->Parameters.DeviceIoControl.IoControlCode) {
+        case IOCTL_HEARTBEAT: {
+            if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(ULONG)) {
+                status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+
+            if (!g_Cs2Pid) {
+                *(PULONG)Irp->AssociatedIrp.SystemBuffer = HEARTBEAT_STATUS_CS2_NOT_FOUND;
+                written = sizeof(ULONG);
+                break;
+            } else {
+                *(PULONG)Irp->AssociatedIrp.SystemBuffer = HEARTBEAT_MAGIC;
+                written = sizeof(ULONG);                
+            }
+
+            break;
+        }
+        
+        default: {
+            status = STATUS_INVALID_DEVICE_REQUEST;
+        }
+    }
+
+    Irp->IoStatus.Status = status;
+    Irp->IoStatus.Information = written;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+
+    return status;
+}
 
 VOID DriverUnload(IN PDRIVER_OBJECT DriverObject) {
-    UNREFERENCED_PARAMETER(DriverObject);
+    UNICODE_STRING symlink = RTL_CONSTANT_STRING(SATURN_SYMLINK_NAME);
+    IoDeleteSymbolicLink(&symlink);
+    IoDeleteDevice(DriverObject->DeviceObject);
 
     NTSTATUS threadStatus;
     threadStatus = PsRemoveCreateThreadNotifyRoutine(createThreadRoutine);
@@ -36,6 +87,29 @@ NTSTATUS DriverEntry(
     UNREFERENCED_PARAMETER(RegistryPath);
     
     DriverObject->DriverUnload = DriverUnload;
+    DriverObject->MajorFunction[IRP_MJ_CREATE] = DriverCreateClose;
+    DriverObject->MajorFunction[IRP_MJ_CLOSE] = DriverCreateClose;
+    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DriverControl;
+
+    UNICODE_STRING devName = RTL_CONSTANT_STRING(SATURN_DEVICE_NAME);
+    UNICODE_STRING symlink = RTL_CONSTANT_STRING(SATURN_SYMLINK_NAME);
+    PDEVICE_OBJECT device;
+
+    NTSTATUS deviceStatus = IoCreateDevice(DriverObject, 0, &devName,
+        0x8000, FILE_DEVICE_SECURE_OPEN, FALSE, &device);
+    if (!NT_SUCCESS(deviceStatus)) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+            "saturn: failed to create device, err: %ld\n", deviceStatus);
+        return deviceStatus;
+    }
+
+    deviceStatus = IoCreateSymbolicLink(&symlink, &devName);
+    if (!NT_SUCCESS(deviceStatus)) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+            "saturn: failed to create symlink, err: %ld\n", deviceStatus);
+        IoDeleteDevice(device);
+        return deviceStatus;
+    }
 
     NTSTATUS threadStatus;
     threadStatus = PsSetCreateThreadNotifyRoutine(createThreadRoutine);
