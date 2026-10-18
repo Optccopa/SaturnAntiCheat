@@ -54,8 +54,8 @@ bcdedit /set testsigning off
 
 ### Clone the source code
 ```bash
-git clone https://github.com/optccopa/anticheat
-cd anticheat
+git clone https://github.com/optccopa/SaturnAntiCheat
+cd SaturnAntiCheat
 ```
 > [!NOTE]
 > Signing cert is created on first build as `SaturnAC` in `CurrentUser\My`
